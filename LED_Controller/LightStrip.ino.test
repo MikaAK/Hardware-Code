@@ -1,0 +1,137 @@
+class LightStrip {
+  public:
+    CRGB leds[NUM_LEDS];
+    CRGBPalette16 currentPalette;
+    TBlendType    currentBlending;
+
+    bool isSunriseRunning = false;
+    int currentSunriseHour = 10;
+    int currentSunriseMinute = 30;
+    int currentSunriseDuration = 1800000; // 10 Sec
+    int transitionDuration = 2000; // 2 Sec
+
+    int currentBrightness = STARTING_BRIGHTNESS;
+    int maxBrightness = MAX_BRIGHTNESS;
+    int currentColor = CRGB::Black;
+
+    LightStrip(int numLeds) : leds {}
+
+    void setupLEDs() {
+      FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+
+      setAllToColor(currentColor);
+      setCurrentBrightness();
+      FastLED.show();
+
+      setCurrentPalletToSunrise();
+      currentBlending = LINEARBLEND;
+
+      Serial.println("Finished setting up LEDs");
+    }
+
+    void runSunriseTransition() {
+      Serial.println("Running sunrise transition...");
+
+      isSunriseRunning = true;
+
+      // TODO: Make this brightness start at 0 and scale with day to MAX_BRIGHNESS
+      currentBrightness = MAX_BRIGHTNESS;
+
+      FastLED.setBrightness(currentBrightness);
+
+      setCurrentPalletToSunrise();
+
+      int delayPerStep = floor(currentSunriseDuration / MAX_COLOR_INDEX);
+
+      for (int i = 0; i < MAX_COLOR_INDEX; i++) {
+        fill_solid(leds, NUM_LEDS, colourForPalletIndex(i));
+        FastLED.delay(delayPerStep);
+      }
+
+      currentColor = colourForPalletIndex(MAX_COLOR_INDEX);
+      isSunriseRunning = false;
+
+      Serial.println("Sunrise transition complete");
+    }
+
+    void setCurrentPalletToSunrise() {
+      CRGB black = CRGB::Black;
+      CRGB candle = 0xFF3F04;
+      CRGB candle_second = 0xFF580B;
+      CRGB candle_third = 0xFF7417;
+      CRGB candle_fourth = 0xFF8B27;
+      CRGB candle_fifth = 0xFFA339;
+      CRGB candle_sixth = 0xFFB54E;
+      CRGB candle_seven = 0xFFC964;
+      CRGB candle_eight = 0xFFD97A;
+      CRGB candle_nine = 0xFFEB90;
+      CRGB almost_day = 0xFFF8A7;
+      CRGB full_day = 0xF8FFB7;
+
+      setCurrentPallet16(
+        black,  black,  candle,  candle,
+        candle_second, candle_third, candle_fourth, candle_fifth, candle_fifth,
+        candle_sixth, candle_sixth,  candle_seven,  candle_eight,  candle_nine,
+        almost_day, full_day
+      );
+    }
+
+    void setCurrentPallet16(
+      CRGB colour_1, CRGB colour_2, CRGB colour_3, CRGB colour_4,
+      CRGB colour_5, CRGB colour_6, CRGB colour_7, CRGB colour_8,
+      CRGB colour_9, CRGB colour_10, CRGB colour_11, CRGB colour_12,
+      CRGB colour_13, CRGB colour_14, CRGB colour_15, CRGB colour_16
+    ) {
+      currentPalette = CRGBPalette16(
+        colour_1, colour_2, colour_3, colour_4,
+        colour_5, colour_6, colour_7, colour_8,
+        colour_9, colour_10, colour_11, colour_12,
+        colour_13, colour_14, colour_15, colour_16
+      );
+    }
+
+    void setCurrentBrightness() {
+      FastLED.setBrightness(currentBrightness);
+      FastLED.show();
+    }
+
+    void transitionCurrentBrightness(int wantedBrightness) {
+      float scaledWantedBrightness = floor((float)wantedBrightness / (float)MAX_BRIGHTNESS * (float)maxBrightness);
+
+      if (currentBrightness > scaledWantedBrightness) {
+        int diff = currentBrightness - scaledWantedBrightness;
+        int stepDuration = floor(transitionDuration / diff);
+
+        Serial.println("Transitioning brightness down " + String(diff) + " steps from " + currentBrightness + "...");
+
+        for (currentBrightness; currentBrightness > scaledWantedBrightness; currentBrightness--) {
+          setCurrentBrightness();
+          FastLED.delay(stepDuration);
+        }
+      }
+
+      if (currentBrightness < scaledWantedBrightness) {
+        int diff = scaledWantedBrightness - currentBrightness;
+        int stepDuration = floor(transitionDuration / diff);
+
+        Serial.println("Transitioning brightness up " + String(diff) + " steps from " + currentBrightness + "...");
+
+        for (currentBrightness; currentBrightness < scaledWantedBrightness; currentBrightness++) {
+          setCurrentBrightness();
+          FastLED.delay(stepDuration);
+        }
+      }
+
+      Serial.println("Brightness transition to " + String(wantedBrightness) + " complete");
+    }
+
+    CRGB colourForPalletIndex(int currentColorIndex) {
+      return ColorFromPalette(currentPalette, currentColorIndex, currentBrightness, currentBlending);
+    }
+
+    void setAllToColor(int color) {
+      currentColor = color;
+
+      fill_solid(leds, NUM_LEDS, color);
+    }
+}

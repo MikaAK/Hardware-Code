@@ -10,11 +10,12 @@
 #include <FastLED.h>
 #include <time.h>
 #include <Preferences.h>
+#include <esp_bt.h>
 #include "secrets.h"
 
 #define VERSION "0.0.0"
 
-#define PREFERENCES_KEY "led-controller"
+#define PREFERENCES_KEY "ledpreferences"
 
 #define MAIN_LOOP_MS_TARGET 100 // 100ms per loop == 60 Loops a second
 
@@ -46,7 +47,7 @@ String password = SECRET_WIFI_PASSWORD;
 int wifiLastReconnectionMS = 0;
 
 bool isSunriseRunning = false;
-int currentSunriseHour = 10;
+int currentSunriseHour = 9;
 int currentSunriseMinute = 30;
 int currentSunriseDuration = 1800000; // 10 Sec
 int transitionDuration = 2000; // 2 Sec
@@ -64,6 +65,8 @@ TaskHandle_t AltCoreTask;
 void setupPreferences() {
   preferences.begin(PREFERENCES_KEY, false);
 
+  Serial.println("CURRENT PREF: " + String(preferences.getInt("currentBrightness", currentBrightness)));
+
   currentSunriseHour = preferences.getInt("currentSunriseHour", currentSunriseHour);
   currentSunriseMinute = preferences.getInt("currentSunriseMinute", currentSunriseMinute);
   currentSunriseDuration = preferences.getInt("currentSunriseDuration", currentSunriseDuration);
@@ -75,18 +78,23 @@ void setupPreferences() {
 
   ssid = preferences.getString("ssid", ssid);
   password = preferences.getString("password", password);
-
-  preferences.end();
 }
 
 void setupWifi() {
   WiFi.begin(ssid.c_str(), password.c_str());
   Serial.println("");
 
+  int connectionAttempt = 0;
+
   // Wait for connection
   while (WiFi.status() != WL_CONNECTED) {
+    leds[connectionAttempt++] = CRGB::Red;
     delay(500);
     Serial.print(".");
+  }
+
+  for (int i = 0; i < connectionAttempt; i++) {
+    leds[connectionAttempt] = CRGB::Green;
   }
 
   Serial.println("");
@@ -111,6 +119,7 @@ void setupWebServer() {
   server.on("/heartbeat", handle_Heartbeat);
 
   server.on("/sunrise", handle_SunriseStart);
+  server.on("/cancel-sunrise", handle_SunriseCancel);
   server.on("/set-sunrise-duration", handle_SetCurrentSunriseDuration);
   server.on("/set-sunrise-time", handle_SetSunriseTime);
 
@@ -134,7 +143,6 @@ void setupLEDs() {
 
   setAllToColor(currentColor);
   setCurrentBrightness();
-  FastLED.show();
 
   setCurrentPalletToSunrise();
   currentBlending = LINEARBLEND;
@@ -190,9 +198,9 @@ void setup() {
 
   esp_bt_controller_disable();
   setupPreferences();
+  setupWifi();
   setupTimezone();
   setupLEDs();
-  setupWifi();
   setupWebServer();
   setupOTA();
   setupMDNS();
@@ -227,6 +235,13 @@ void handle_SunriseStart() {
   server.send(200, "text/plain", "OK");
 }
 
+void handle_SunriseCancel() {
+  cancelAltCoreSunrise();
+  isSunriseRunning = false;
+
+  server.send(200, "text/plain", "OK");
+}
+
 void handle_SetSunriseTime() {
   int hour = server.arg("hour").toInt();
   int minute = server.arg("minute").toInt();
@@ -245,12 +260,8 @@ void handle_SetSunriseTime() {
    currentSunriseHour = hour;
    currentSunriseMinute = minute;
 
-   preferences.begin(PREFERENCES_KEY, false);
-
    preferences.putInt("currentSunriseHour", currentSunriseHour);
    preferences.putInt("currentSunriseMinute", currentSunriseMinute);
-
-   preferences.end();
 
    server.send(200, "text/plain", String(hour) + ":" + String(minute));
   }
@@ -292,12 +303,8 @@ void handle_CalibrationCheck() {
 
   setCurrentBrightness();
 
-  preferences.begin(PREFERENCES_KEY, false);
-
   preferences.putInt("currentColor", currentColor);
   preferences.putInt("currentBrightness", currentBrightness);
-
-  preferences.end();
 
   server.send(200, "text/plain", "OK");
 }
@@ -316,11 +323,7 @@ void handle_SetToColor() {
   setAllToColor(currentColor);
   FastLED.show();
 
-  preferences.begin(PREFERENCES_KEY, false);
-
   preferences.putInt("currentColor", currentColor);
-
-  preferences.end();
 
   Serial.println("Color transition complete");
 
@@ -339,12 +342,7 @@ void handle_SetBrightness() {
   } else {
     transitionCurrentBrightness(brightnessRequested);
 
-    preferences.begin(PREFERENCES_KEY, false);
-
     preferences.putInt("currentBrightness", currentBrightness);
-
-    preferences.end();
-
 
     server.send(200, "text/plain", String(currentBrightness));
   }
@@ -359,12 +357,8 @@ void handle_SetMaxBrightness() {
     server.send(200, "text/plain", "Max brightness requested is too high");
   } else {
     maxBrightness = brightnessRequested;
-
-    preferences.begin(PREFERENCES_KEY, false);
-
+    
     preferences.putInt("maxBrightness", maxBrightness);
-
-    preferences.end();
 
     Serial.println("Set max brightness to " + String(brightnessRequested));
 
@@ -375,11 +369,7 @@ void handle_SetMaxBrightness() {
 void handle_SetCurrentSunriseDuration() {
   currentSunriseDuration = server.arg("value").toInt();
 
-  preferences.begin(PREFERENCES_KEY, false);
-
   preferences.putInt("currentSunriseDuration", currentSunriseDuration);
-
-  preferences.end();
 
   Serial.println("Set sunrise duration to " + String(currentSunriseDuration));
 
@@ -393,11 +383,7 @@ void handle_SetTimezone() {
 
   setTimezoneWithGmtOffset();
 
-  preferences.begin(PREFERENCES_KEY, false);
-
   preferences.putInt("gmtOffsetSec", gmtOffsetSec);
-
-  preferences.end();
 
   server.send(200, "text/plain", String(gmtOffsetSec));
 }
@@ -448,7 +434,7 @@ String currentSettings() {
     ", \"MAX_BRIGHTNESS\": " + MAX_BRIGHTNESS +
     ", \"currentSunriseDuration\": " + currentSunriseDuration +
     ", \"sunriseTime\": " + "\"" + String(currentSunriseHour) + ":" + String(currentSunriseMinute) + "\"" +
-    ", \"isSunriseRunning\": " + String(isSunriseRunning) +
+    ", \"isSunriseRunning\": " + (isSunriseRunning ? "true" : "false") +
     ", \"version\": " + "\"" + VERSION + "\"" +
     ", \"wifiStrength\": " + "\"" + WiFi.RSSI() + "\"" +
     ", \"time\": " + "\"" + getLocalTimeString() + "\"" +
@@ -629,4 +615,8 @@ void runSunriseTransitionOnAltCore() {
     &AltCoreTask,      /* Task handle to keep track of created task */
     1
   );
+}
+
+void cancelAltCoreSunrise() {
+  vTaskDelete(AltCoreTask);
 }
