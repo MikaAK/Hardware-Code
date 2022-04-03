@@ -6,6 +6,7 @@
 #define SOFTWARE_VERSION "0.1.0"
 #define MANUFACTURER_NAME "Mika Software Inc."
 #define MODEL_NAME "Proximity Necklace nRF52"
+#define CONN_LED_INTERVAL 1000
 
 const uint8_t BLE_SERVICE_PROXIMITY_NECKLACE[] = {
   0xFE, 0x3A, 0xAF, 0xFD, 0x68, 0xE1, 0x43, 0xCD,
@@ -23,15 +24,15 @@ BLEDis  bledis;  // device information
 BLEUart bleuart;
 BLEBas  blebas;
 
-//BLEService bleNecklackService = BLEService(BLE_SERVICE_PROXIMITY_NECKLACE);
+BLEService bleNecklackService = BLEService(BLE_SERVICE_PROXIMITY_NECKLACE);
 
 String UNIQUE_ID = String(getMcuUniqueID());
 char deviceName[24];
 
-void log(String& message) {
+void log(String message) {
   Serial.println(message);
   
-  if (bleuart.available()) {
+  if (bleuart.notifyEnabled()) {
     bleuart.write(message.c_str()); 
   }
 }
@@ -39,7 +40,7 @@ void log(String& message) {
 void log(const char* message) {
   Serial.println(message);
   
-  if (bleuart.available()) {
+  if (bleuart.notifyEnabled()) {
     bleuart.write(message); 
   }
 }
@@ -52,19 +53,22 @@ void setupSerial() {
 
 void setupBluetooth() {
   Bluefruit.autoConnLed(true);
-    
-  log("Config prph bandwidth...");
-  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
 
-
-  log("Begin bluefruit...");
-//  Bluefruit.begin(1, 1);
-  Bluefruit.begin();
+  log("Begin bluefruit in Central & Periphiral mode...");
+  Bluefruit.begin(1, 1);
   Bluefruit.setTxPower(4);
   Bluefruit.setName(deviceName);
+  Bluefruit.setConnLedInterval(CONN_LED_INTERVAL);
 
-  Bluefruit.Periph.setConnectCallback(connect_callback);
-  Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+  Bluefruit.Periph.setConnectCallback(periph_connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(periph_disconnect_callback);
+
+  Bluefruit.Central.setConnectCallback(central_connect_callback);
+  Bluefruit.Central.setDisconnectCallback(central_disconnect_callback);
+
+  
+  log("Starting UART...");
+  bleuart.begin();
   
 //  log("Starting OTA ...");
 //  bledfu.begin();
@@ -79,9 +83,15 @@ void setupBluetooth() {
   log("Starting battery service...");
   blebas.begin();
   blebas.notify(100);
+}
 
-  log("Starting UART...");
-  bleuart.begin();
+void startScanner(void) {
+  Bluefruit.Scanner.setRxCallback(scan_callback);
+  Bluefruit.Scanner.restartOnDisconnect(true);
+  Bluefruit.Scanner.setInterval(10000, 500); // in unit of 0.625 ms
+//  Bluefruit.Scanner.filterUuid(bleNecklackService.uuid);
+  Bluefruit.Scanner.useActiveScan(true);
+  Bluefruit.Scanner.start(0);                   // 0 = Don't stop scanning after n seconds
 }
 
 void startAdv(void) {
@@ -89,7 +99,7 @@ void startAdv(void) {
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
 
-//  Bluefruit.Advertising.addService(bleNecklackService);
+  Bluefruit.Advertising.addService(bleNecklackService);
   Bluefruit.Advertising.addService(bleuart);
   Bluefruit.Advertising.addService(bledis);
   Bluefruit.Advertising.addService(blebas);
@@ -98,37 +108,9 @@ void startAdv(void) {
   Bluefruit.ScanResponse.addName();
 
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
+  Bluefruit.Advertising.setInterval(10000, 500);    // in unit of 0.625 ms
   Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds
-}
-
-
-void connect_callback(uint16_t conn_handle) {
-  // Get the reference to current connection
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
-
-  char central_name[32] = { 0 };
-  connection->getPeerName(central_name, sizeof(central_name));
-
-  Serial.print("Connected to ");
-  log(central_name);
-}
-
-void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
-  (void) conn_handle;
-  (void) reason;
-
-  log("Disconnected, reason = 0x" + String(HEX));
-}
-
-void write_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len)
-{
-  (void) conn_hdl;
-  (void) chr;
-  (void) len; // len should be 1
-
-  log("WRITE CALLBACK HIT");
 }
 
 void setup() {
@@ -141,21 +123,96 @@ void setup() {
   log("\n---- Bluetooth Setup Start ----");
   setupBluetooth();
   log("---- Bluetooth Setup End ----\n");
+  
+  startScanner();
+  log("---- Bluetooth Scanning Started ----");
 
   startAdv();
   log("---- Bluetooth Advertising Started ----");
 }
 
-void loop() {
-  writeSerialToBleUart();
-}
+// Callbacks
 
-void writeSerialToBleUart() {
-  if (Serial.available()) {
-    delay(2);
+void scan_callback(ble_gap_evt_adv_report_t* report) {
+  // Since we configure the scanner with filterUuid()
+  // Scan callback only invoked for device with bleuart service advertised  
+  // Connect to the device with bleuart service in advertising packet  
+//  Bluefruit.Central.connect(report);
+  char macBuffer[32];
+  uint8_t buffer[32];
+  
+  snprintf(macBuffer, 19, "%02X:%02X:%02X:%02X:%02X:%02X", 
+    report->peer_addr.addr[5],
+    report->peer_addr.addr[4],
+    report->peer_addr.addr[3],
+    report->peer_addr.addr[2],
+    report->peer_addr.addr[1],
+    report->peer_addr.addr[0]
+  );
+  
+  log("\nMac: " + String(macBuffer));
+  log("RSSI: " + String(report->rssi));
 
-    uint8_t buf[64];
-    int count = Serial.readBytes(buf, sizeof(buf));
-    bleuart.write( buf, count );
+  if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_SHORT_LOCAL_NAME, buffer, sizeof(buffer))) {
+    log("Short Name: " + String((char *)buffer));
+    memset(buffer, 0, sizeof(buffer));
   }
+
+  /* Complete Local Name */
+  if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME, buffer, sizeof(buffer))) {
+    log("Complete Name: " + String((char *)buffer));
+    memset(buffer, 0, sizeof(buffer));
+  }
+
+  /* TX Power Level */
+  if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_TX_POWER_LEVEL, buffer, sizeof(buffer))) {
+    log("TX Power Level: " + String(buffer[0]));
+    memset(buffer, 0, sizeof(buffer));
+  }
+
+  
+  if (String(macBuffer).indexOf("56:16:56:B1:9A:5A") != -1) {
+    Bluefruit.Central.connect(report);
+  } else {
+    Bluefruit.Scanner.resume();
+  }
+  // For Softdevice v6: after received a report, scanner will be paused
+  // We need to call Scanner resume() to continue scanning
+  memset(buffer, 0, sizeof(macBuffer));
 }
+
+void periph_connect_callback(uint16_t conn_handle) {
+  // Get the reference to current connection
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char central_name[32] = { 0 };
+  connection->getPeerName(central_name, sizeof(central_name));
+
+  log("[Peripheral] Connected to  " + String(central_name));
+}
+
+void periph_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
+  (void) conn_handle;
+  (void) reason;
+
+  log("[Peripheral] Disconnected, reason = 0x" + String(HEX));
+}
+
+void central_connect_callback(uint16_t conn_handle) {
+  // Get the reference to current connection
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char peer_name[32] = { 0 };
+  connection->getPeerName(peer_name, sizeof(peer_name));
+
+  log("[Central] Connected to " + String(peer_name));
+}
+
+void central_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
+  (void) conn_handle;
+  (void) reason;
+  
+  log("[Central] Disconnected");
+}
+
+void loop() { }
