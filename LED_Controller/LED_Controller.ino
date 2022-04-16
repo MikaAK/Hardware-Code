@@ -17,7 +17,7 @@
 
 #define PREFERENCES_KEY "ledpreferences"
 
-#define MAIN_LOOP_MS_TARGET 100 // 100ms per loop == 60 Loops a second
+#define MAIN_LOOP_MS_TARGET 17 // 100ms per loop == 60 Loops a second
 
 #define MAX_COLOR_INDEX 240
 #define STARTING_COLOR_INDEX 0
@@ -30,7 +30,7 @@
 #define WIFI_RECONNECTION_INTERVAL 30000
 
 #define NUM_LEDS 54
-#define DATA_PIN 14
+#define DATA_PIN 22
 
 #define NTP_SERVER "pool.ntp.org"
 #define DAYLIGHT_SAVINGS_OFFSET_SEC 0 // DEFAULT WOKRS FINE
@@ -454,13 +454,15 @@ void ensureWifiConnected() {
 }
 
 void maybeRunSunriseIfTime() {
-  time_t now = time(NULL);
-  struct tm *tm_struct = localtime(&now);
-
-  if (tm_struct->tm_hour == currentSunriseHour and tm_struct->tm_min == currentSunriseMinute) {
-    Serial.println("It's sunrise time!!! Running sunrise transition");
-
-    runSunriseTransitionOnAltCore();
+  if (!isSunriseRunning) {
+    time_t now = time(NULL);
+    struct tm *tm_struct = localtime(&now);
+  
+    if (tm_struct->tm_hour == currentSunriseHour and tm_struct->tm_min == currentSunriseMinute) {
+      Serial.println("It's sunrise time!!! Running sunrise transition");
+  
+      runSunriseTransitionOnAltCore();
+    }
   }
 }
 
@@ -575,10 +577,6 @@ String getLocalTimeString() {
 }
 
 void runSunriseTransition() {
-  Serial.println("Running sunrise transition...");
-
-  isSunriseRunning = true;
-
   // TODO: Make this brightness start at 0 and scale with day to MAX_BRIGHNESS
   currentBrightness = MAX_BRIGHTNESS;
 
@@ -595,14 +593,16 @@ void runSunriseTransition() {
 
   currentColor = colourForPalletIndex(MAX_COLOR_INDEX);
   isSunriseRunning = false;
-
-  Serial.println("Sunrise transition complete");
+  FastLED.show();
 }
 
 void AltCoreColourTransitionTask(void * pvParameters) {
   Serial.println("Running color transition on core " + xPortGetCoreID());
 
+  isSunriseRunning = true;   
   runSunriseTransition();
+  cancelAltCoreSunrise();
+  isSunriseRunning = false;
 }
 
 void runSunriseTransitionOnAltCore() {
@@ -611,9 +611,9 @@ void runSunriseTransitionOnAltCore() {
     "Sunrise Transition",     /* name of task. */
     10000,       /* Stack size of task */
     NULL,        /* parameter of the task */
-    1,           /* priority of the task */
+    0,           /* priority of the task */
     &AltCoreTask,      /* Task handle to keep track of created task */
-    1
+    0
   );
 }
 
