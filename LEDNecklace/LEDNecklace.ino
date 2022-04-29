@@ -1,12 +1,14 @@
 #include <bluefruit.h>
-#include <Adafruit_LittleFS.h>
-#include <InternalFileSystem.h>
+#include <FastLED.h>
+//#include <Adafruit_LittleFS.h>
+//#include <InternalFileSystem.h>
 
 #define BLE_APPEARANCE_PROXIMITY_DEVICE 1859
 #define SOFTWARE_VERSION "0.1.0"
 #define MANUFACTURER_NAME "Mika Software Inc."
 #define MODEL_NAME "Proximity Necklace nRF52"
 #define CONN_LED_INTERVAL 1000
+#define LED_DATA_PIN 4
 
 const uint8_t BLE_SERVICE_PROXIMITY_NECKLACE[] = {
   0xFE, 0x3A, 0xAF, 0xFD, 0x68, 0xE1, 0x43, 0xCD,
@@ -29,7 +31,11 @@ BLEService bleNecklackService = BLEService(BLE_SERVICE_PROXIMITY_NECKLACE);
 String UNIQUE_ID = String(getMcuUniqueID());
 char deviceName[24];
 
-void log(String message) {
+CRGB leds[1];
+CRGB currentLEDColour = CRGB::Blue;
+int currentLEDBrightness = 30;
+
+void log(const String message) {
   Serial.println(message);
   
   if (bleuart.notifyEnabled()) {
@@ -89,7 +95,7 @@ void startScanner(void) {
   Bluefruit.Scanner.setRxCallback(scan_callback);
   Bluefruit.Scanner.restartOnDisconnect(true);
   Bluefruit.Scanner.setInterval(10000, 500); // in unit of 0.625 ms
-//  Bluefruit.Scanner.filterUuid(bleNecklackService.uuid);
+  Bluefruit.Scanner.filterUuid(bleuart.uuid);
   Bluefruit.Scanner.useActiveScan(true);
   Bluefruit.Scanner.start(0);                   // 0 = Don't stop scanning after n seconds
 }
@@ -113,12 +119,21 @@ void startAdv(void) {
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds
 }
 
+void setupLEDs() {
+  FastLED.addLeds<WS2812B, 9>(leds, 1);
+  FastLED.setBrightness(currentLEDBrightness);
+  fill_solid(leds, 1, currentLEDColour);
+  FastLED.show();
+}
+
 void setup() {
   setupSerial();
 
   String("LED Necklace - " + UNIQUE_ID).toCharArray(deviceName, 24);
 
   log("Starting Up " + String(deviceName) + "...");
+
+  setupLEDs();
 
   log("\n---- Bluetooth Setup Start ----");
   setupBluetooth();
@@ -200,7 +215,7 @@ void periph_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
 
 void central_connect_callback(uint16_t conn_handle) {
   // Get the reference to current connection
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+  BLEConnection* connection = Bluesfruit.Connection(conn_handle);
 
   char peer_name[32] = { 0 };
   connection->getPeerName(peer_name, sizeof(peer_name));

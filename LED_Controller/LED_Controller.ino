@@ -17,7 +17,7 @@
 
 #define PREFERENCES_KEY "ledpreferences"
 
-#define MAIN_LOOP_MS_TARGET 17 // 100ms per loop == 60 Loops a second
+#define MAIN_LOOP_MS_TARGET 16 // 100ms per loop == 60 Loops a second
 
 #define MAX_COLOR_INDEX 240
 #define STARTING_COLOR_INDEX 0
@@ -65,13 +65,13 @@ TaskHandle_t AltCoreTask;
 void setupPreferences() {
   preferences.begin(PREFERENCES_KEY, false);
 
-  Serial.println("CURRENT PREF: " + String(preferences.getInt("currentBrightness", currentBrightness)));
+  Serial.println("CURRENT PREF: " + String(preferences.getInt("currBrt", currentBrightness)));
 
-  currentSunriseHour = preferences.getInt("currentSunriseHour", currentSunriseHour);
-  currentSunriseMinute = preferences.getInt("currentSunriseMinute", currentSunriseMinute);
-  currentSunriseDuration = preferences.getInt("currentSunriseDuration", currentSunriseDuration);
-  transitionDuration = preferences.getInt("transitionDuration", transitionDuration);
-  currentBrightness = preferences.getInt("currentBrightness", currentBrightness);
+  currentSunriseHour = preferences.getInt("currSunHr", currentSunriseHour);
+  currentSunriseMinute = preferences.getInt("currSunMin", currentSunriseMinute);
+  currentSunriseDuration = preferences.getInt("currSunDur", currentSunriseDuration);
+  transitionDuration = preferences.getInt("transDur", transitionDuration);
+  currentBrightness = preferences.getInt("currBrt", currentBrightness);
   maxBrightness = preferences.getInt("maxBrightness", maxBrightness);
   currentColor = preferences.getInt("currentColor", currentColor);
   gmtOffsetSec = preferences.getInt("gmtOffsetSec", gmtOffsetSec);
@@ -167,6 +167,7 @@ void setupOTA() {
     })
     .onEnd([]() {
       Serial.println("\nEnd");
+      delay(2000);
       ESP.restart();
     })
     .onProgress([](unsigned int progress, unsigned int total) {
@@ -260,8 +261,8 @@ void handle_SetSunriseTime() {
    currentSunriseHour = hour;
    currentSunriseMinute = minute;
 
-   preferences.putInt("currentSunriseHour", currentSunriseHour);
-   preferences.putInt("currentSunriseMinute", currentSunriseMinute);
+   preferences.putInt("currSunHr", currentSunriseHour);
+   preferences.putInt("currSunMin", currentSunriseMinute);
 
    server.send(200, "text/plain", String(hour) + ":" + String(minute));
   }
@@ -304,7 +305,7 @@ void handle_CalibrationCheck() {
   setCurrentBrightness();
 
   preferences.putInt("currentColor", currentColor);
-  preferences.putInt("currentBrightness", currentBrightness);
+  preferences.putInt("currBrt", currentBrightness);
 
   server.send(200, "text/plain", "OK");
 }
@@ -342,7 +343,7 @@ void handle_SetBrightness() {
   } else {
     transitionCurrentBrightness(brightnessRequested);
 
-    preferences.putInt("currentBrightness", currentBrightness);
+    preferences.putInt("currBrt", currentBrightness);
 
     server.send(200, "text/plain", String(currentBrightness));
   }
@@ -445,11 +446,15 @@ String currentSettings() {
 void ensureWifiConnected() {
   unsigned long currentMS = millis();
 
-  if ((WiFi.status() != WL_CONNECTED) && (currentMS - wifiLastReconnectionMS >= WIFI_RECONNECTION_INTERVAL)) {
+  if ((WiFi.status() != WL_CONNECTED) && ((wifiLastReconnectionMS == 0) || (currentMS - wifiLastReconnectionMS >= WIFI_RECONNECTION_INTERVAL))) {
     Serial.println("Reconnecting to WiFi...");
     WiFi.disconnect();
     WiFi.reconnect();
     wifiLastReconnectionMS = currentMS;
+  }
+
+  if (WiFi.status() == WL_CONNECTED && wifiLastReconnectionMS != 0) {
+    wifiLastReconnectionMS = 0;
   }
 }
 
@@ -596,18 +601,18 @@ void runSunriseTransition() {
   FastLED.show();
 }
 
-void AltCoreColourTransitionTask(void * pvParameters) {
+void AltCorSunriseTransition(void * pvParameters) {
   Serial.println("Running color transition on core " + xPortGetCoreID());
 
   isSunriseRunning = true;   
   runSunriseTransition();
-  cancelAltCoreSunrise();
   isSunriseRunning = false;
+  cancelAltCoreSunrise();
 }
 
 void runSunriseTransitionOnAltCore() {
   xTaskCreatePinnedToCore(
-    AltCoreColourTransitionTask,   /* Task function. */
+    AltCorSunriseTransition,   /* Task function. */
     "Sunrise Transition",     /* name of task. */
     10000,       /* Stack size of task */
     NULL,        /* parameter of the task */
