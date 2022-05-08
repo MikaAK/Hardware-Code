@@ -233,21 +233,10 @@ void setup() {
   log("---- Bluetooth Advertising Started ----");
 }
 
-bool isRecentlyFound(uint16_t connHandle) {
-  char macBuffer[32];
+bool isRecentlyFound(String macBuffer) {
   bool wasFound = false;
-  ble_gap_addr_t peer_addr = Bluefruit.Connection(connHandle)->getPeerAddr();
-  
-  snprintf(macBuffer, 19, "%02X:%02X:%02X:%02X:%02X:%02X",
-           peer_addr.addr[5],
-           peer_addr.addr[4],
-           peer_addr.addr[3],
-           peer_addr.addr[2],
-           peer_addr.addr[1],
-           peer_addr.addr[0]
-          );
 
-  log("Checking recently found in " + String(MAX_NECKLACES) + " items : " + String(macBuffer));
+  log("Checking if " + macBuffer + " recently found in " + String(MAX_NECKLACES) + " items");
 
   for (int i = 0; i < MAX_NECKLACES; i++) {    
     if (recentlyConnectedMacs[i] == macBuffer) {
@@ -317,7 +306,13 @@ void scan_callback(ble_gap_evt_adv_report_t* report) {
            report->peer_addr.addr[0]
           );
 
-  log("Found necklace " + String(report->rssi) + " far away, MAC: " + String(macBuffer));
+  log("[Central] Found necklace " + String(report->rssi) + " far away, MAC: " + String(macBuffer));
+
+  if (isRecentlyFound(String(macBuffer))) {
+    log("[Central] Already found " + String(macBuffer) + " no need to connect");
+    
+    return;
+  }
 
   if (rssi > maxRSSI) {
     maxRSSI = rssi;
@@ -326,19 +321,19 @@ void scan_callback(ble_gap_evt_adv_report_t* report) {
   }
 
   if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_SHORT_LOCAL_NAME, buffer, sizeof(buffer))) {
-    log("Short Name: " + String((char *)buffer));
+    log("[Central] Short Name: " + String((char *)buffer));
     memset(buffer, 0, sizeof(buffer));
   }
 
   /* Complete Local Name */
   if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_COMPLETE_LOCAL_NAME, buffer, sizeof(buffer))) {
-    log("Complete Name: " + String((char *)buffer));
+    log("[Central] Complete Name: " + String((char *)buffer));
     memset(buffer, 0, sizeof(buffer));
   }
 
   /* TX Power Level */
   if (Bluefruit.Scanner.parseReportByType(report, BLE_GAP_AD_TYPE_TX_POWER_LEVEL, buffer, sizeof(buffer))) {
-    log("TX Power Level: " + String(buffer[0]));
+    log("[Central] TX Power Level: " + String(buffer[0]));
     memset(buffer, 0, sizeof(buffer));
   }
 
@@ -358,11 +353,6 @@ void periph_connect_callback(uint16_t connHandle) {
 
     Bluefruit.disconnect(connHandle);
     
-    return;
-  } else if (isRecentlyFound(connHandle)) {
-    log("[Peripheral] Already found this necklace, exiting....");  
-
-    Bluefruit.disconnect(connHandle);
     return;
   }
   
@@ -401,11 +391,6 @@ void periph_disconnect_callback(uint16_t connHandle, uint8_t reason) {
 void central_connect_callback(uint16_t connHandle) {
   if (isConnected) {
     log("[Central] Already at max connections, exiting....");  
-
-    Bluefruit.disconnect(connHandle);
-    return;
-  } else if (isRecentlyFound(connHandle)) {
-    log("[Central] Already found this necklace, exiting....");  
 
     Bluefruit.disconnect(connHandle);
     return;
