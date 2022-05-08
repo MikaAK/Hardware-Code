@@ -14,7 +14,7 @@
 #define LED_RSSI_STEPS 6
 #define LED_DATA_PIN 4
 #define DISCONNECTION_BLINKS 4
-#define RSSI_AVG_NUM 3
+#define RSSI_AVG_NUM 2
 
 const uint8_t PROXIMITY_NECKLACE_BLE_SERVICE_UUID[] = {
   0xFE, 0x3A, 0xAF, 0xFD, 0x68, 0xE1, 0x43, 0xCD,
@@ -26,8 +26,6 @@ const uint8_t PROXIMITY_NECKLACE_BLE_LED_COLOR_CHARACTERISTIC[] = {
   0x91, 0x77, 0xA6, 0x2D, 0xE6, 0xA4, 0xF4, 0xF4
 };
 
-const uint16_t LED_COLOR[3] = {255, 120, 200};
-
 // BLE Service
 BLEDfu  bledfu;  // OTA DFU service
 BLEDis  bledis;  // device information
@@ -35,10 +33,15 @@ BLEUart bleuart;
 //BLEBas  blebas;
 
 BLEService bleNecklackService = BLEService(PROXIMITY_NECKLACE_BLE_SERVICE_UUID);
-BLECharacteristic bleNecklaceDeviceColorCharacteristic(PROXIMITY_NECKLACE_BLE_LED_COLOR_CHARACTERISTIC, BLERead);
+BLECharacteristic bleNecklaceColorChar(PROXIMITY_NECKLACE_BLE_LED_COLOR_CHARACTERISTIC, BLERead);
+
+BLEClientService        bleNecklaceClientService(PROXIMITY_NECKLACE_BLE_SERVICE_UUID);
+BLEClientCharacteristic bleNecklaceColorClientChar(PROXIMITY_NECKLACE_BLE_LED_COLOR_CHARACTERISTIC);
 
 String UNIQUE_ID = String(getMcuUniqueID());
 char deviceName[24];
+char deviceColour[] = "FF00FF";
+char connectedColour[] = "0000FF";
 int maxRSSI = 70;
 int minRSSI = 40;
 bool recentlyFound = false;
@@ -149,14 +152,17 @@ void setupBluetooth() {
 
   log("Starting necklace service...");
   bleNecklackService.begin();
-//  bleNecklaceDeviceColorCharacteristic.addDescriptor(2902, "Necklace Color", BLERead);
-  bleNecklaceDeviceColorCharacteristic.setUserDescriptor("Necklace Colorssssss");
-  bleNecklaceDeviceColorCharacteristic.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  bleNecklaceDeviceColorCharacteristic.setProperties(CHR_PROPS_READ);
-  bleNecklaceDeviceColorCharacteristic.setFixedLen(2 * 3);
-  bleNecklaceDeviceColorCharacteristic.write(LED_COLOR, 2 * 3);
+  
+//  bleNecklaceColorChar.addDescriptor(2902, "Necklace Color", BLERead);
+  bleNecklaceColorChar.setUserDescriptor("Necklace Color");
+  bleNecklaceColorChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleNecklaceColorChar.setProperties(CHR_PROPS_READ);
+  bleNecklaceColorChar.setFixedLen(6);
+  bleNecklaceColorChar.write(deviceColour, 6);
+  bleNecklaceColorChar.begin();
 
-  bleNecklaceDeviceColorCharacteristic.begin();
+  bleNecklaceClientService.begin();
+  bleNecklaceColorClientChar.begin();
 }
 
 void startScanner(void) {
@@ -197,7 +203,7 @@ void setupLEDs() {
 
 void setup() {
   setupSerial();
-
+log(String(sizeof(connectedColour)));
   String("LED Necklace - " + UNIQUE_ID).toCharArray(deviceName, 24);
 
   log("Starting Up " + String(deviceName) + "...");
@@ -269,30 +275,34 @@ void scan_callback(ble_gap_evt_adv_report_t* report) {
 }
 
 bool inRange = false;
+bool isConnected = false;
 
-void periph_connect_callback(uint16_t conn_handle) {
+void periph_connect_callback(uint16_t connHandle) {
+  isConnected = true;
+  
   // Get the reference to current connection
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
-
+  BLEConnection* connection = Bluefruit.Connection(connHandle);
+  
   connection->monitorRssi();
   
-  char central_name[32] = { 0 };
-  char macBuffer[32];
+  setConnectedColor(connHandle);
   
-  connection->getPeerName(central_name, sizeof(central_name));
+  char centralName[24];
+  
+  connection->getPeerName(centralName, sizeof(centralName));
           
-  log("[Peripheral] Connected to " + String(central_name) + ", monitoring till close or disconnected");
+  log("[Peripheral] Connected to " + String(centralName) + ", monitoring till close or disconnected");
 
   inRange = false;
   
-  memset(central_name, 0, sizeof(central_name));
+  memset(centralName, 0, sizeof(centralName));
 }
 
-void periph_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
-  (void) conn_handle;
+void periph_disconnect_callback(uint16_t connHandle, uint8_t reason) {
+  (void) connHandle;
   (void) reason;
-  
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+  isConnected = false;
+  BLEConnection* connection = Bluefruit.Connection(connHandle);
 
   log("[Peripheral] Disconnected, reason = 0x" + String(HEX));
 
@@ -305,30 +315,42 @@ void periph_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
   }
 }
 
-void central_connect_callback(uint16_t conn_handle) {
+void central_connect_callback(uint16_t connHandle) {
+  isConnected = true;
+  
   // Get the reference to current connection
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+  BLEConnection* connection = Bluefruit.Connection(connHandle);
 
   connection->monitorRssi();
   
-  char peer_name[32] = { 0 };
-  connection->getPeerName(peer_name, sizeof(peer_name));
+  setConnectedColor(connHandle);
+  
+  char peerName[24];
+  connection->getPeerName(peerName, sizeof(peerName));
 
-  log("[Central] Connected to " + String(peer_name) + ", monitoring till close or disconnected");
+  log("[Central] Connected to " + String(peerName) + ", monitoring till close or disconnected");
   
   inRange = false;
 
-  memset(peer_name, 0, sizeof(peer_name));
+  memset(peerName, 0, sizeof(peerName));
 }
 
-void central_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
-  (void) conn_handle;
+void central_disconnect_callback(uint16_t connHandle, uint8_t reason) {
+  (void) connHandle;
   (void) reason;
+  
+  isConnected = false;
 
-  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+  BLEConnection* connection = Bluefruit.Connection(connHandle);
 
   log("[Central] Disconnected");
   connection->stopRssi();
+
+  if (recentlyFound) {
+    recentlyFound = false;
+  } else {
+    disconnectBlink();
+  }
 }
 
 int rssiForAvg[RSSI_AVG_NUM];
@@ -340,6 +362,22 @@ void loop() {
     getRssiAndCheckForCloseness(0);
   } else if (Bluefruit.connected(1)) {    
     getRssiAndCheckForCloseness(1);
+  }
+}
+
+void setConnectedColor(uint16_t connHandle) {
+  if (bleNecklaceClientService.discover(connHandle)) {
+    log("[Peripheral] Found Necklace Service"); 
+    
+    if (bleNecklaceColorClientChar.discover()) {
+      bleNecklaceColorClientChar.read(connectedColour, 3);
+
+      log("[Peripheral] Found Necklace Color Charactaristic: " + String(connectedColour));
+    } else {
+     log("[Peripheral] Couldn't find Necklace Color Charactaristic"); 
+    }    
+  } else {
+    log("[Peripheral] Couldn't find Necklace Service");
   }
 }
 
@@ -370,12 +408,14 @@ void resetRssi() {
 
 bool isRssiAvgFilled() {
   bool isFilled = true;
+  
   for (int i = 0; i < RSSI_AVG_NUM; i++) {
     if (rssiForAvg[i] == 0) {
       isFilled = false;
     }
   }
-  return is_filled;
+  
+  return isFilled;
 }
 
 void pushRssi(int rssi) {
@@ -400,41 +440,53 @@ int averageRssi() {
   for (int i = 0; i < RSSI_AVG_NUM; i++) {
     sum += rssiForAvg[i];  
   }
-
+  
   return sum / RSSI_AVG_NUM;
 }
 
 void runClosenessCheck(const int rssi, uint16_t conn_hdl) {
   if (isRssiAvgFilled()) {
-    BLEConnection* connection = Bluefruit.Connection(conn_hdl);
-    int avgRssi = averageRssi();
-    int rssiDelay = blinkDelayInterval(avgRssi);  
-    char deviceName[32] = { 0 };
-    
-    resetRssi();
-    connection->getPeerName(deviceName, sizeof(deviceName));  
-    
-    log(String(deviceName) + " is " + String(avgRssi) + " away " + String(rssiDelay) + "ms delay");
-    
-    turnOnLED(rssiDelay / 3 * 2);
-       
-    if (avgRssi <= minRSSI) {
-      log("Necklace found!!");
-      
-      inRange = true;
-      recentlyFound = true;
-      
-      foundBlink();
-
-      Bluefruit.disconnect(conn_hdl);
-    } else {
-      turnOffLED(rssiDelay / 3);
-    }
+    toggleLightWithAvgRssi(conn_hdl);
   } else {
     pushRssi(rssi);
+
+    if (isRssiAvgFilled()) {
+      toggleLightWithAvgRssi(conn_hdl);
+    }
+  }
+}
+
+void toggleLightWithAvgRssi(uint16_t conn_hdl) {
+  BLEConnection* connection = Bluefruit.Connection(conn_hdl);
+  int avgRssi = averageRssi();
+  int rssiDelay = blinkDelayInterval(avgRssi);  
+  char connectedDeviceName[32] = { 0 };
+  
+  resetRssi();
+  connection->getPeerName(connectedDeviceName, sizeof(connectedDeviceName));  
+  
+  log(String(connectedDeviceName) + " is " + String(avgRssi) + " away " + String(rssiDelay) + "ms delay");
+  
+  turnOnLED(rssiDelay / 3 * 2);
+     
+  if (avgRssi <= minRSSI) {
+    log("Necklace found!!");
+    
+    inRange = true;
+    recentlyFound = true;
+    
+    foundBlink();
+
+    if (avgRssi < minRSSI) {
+      minRSSI = avgRssi;
+    }
+
+    Bluefruit.disconnect(conn_hdl);
+  } else if (isConnected) {
+    turnOffLED(rssiDelay / 3);
   }
 
-  memset(deviceName, 0, sizeof(deviceName));
+  memset(connectedDeviceName, 0, sizeof(connectedDeviceName));
 }
 
 //
