@@ -15,6 +15,7 @@
 #define LED_DATA_PIN 4
 #define DISCONNECTION_BLINKS 4
 #define RSSI_AVG_NUM 2
+#define MAX_NECKLACES 30
 
 const uint8_t PROXIMITY_NECKLACE_BLE_SERVICE_UUID[] = {
   0xFE, 0x3A, 0xAF, 0xFD, 0x68, 0xE1, 0x43, 0xCD,
@@ -45,6 +46,7 @@ char connectedColour[] = "0000FF";
 int maxRSSI = 70;
 int minRSSI = 40;
 bool recentlyFound = false;
+String recentlyConnectedMacs[MAX_NECKLACES];
 
 CRGB leds[1];
 CRGB currentLEDColour = CRGB::Green;
@@ -126,7 +128,7 @@ void setupBluetooth() {
   Bluefruit.setName(deviceName);
   Bluefruit.setConnLedInterval(CONN_LED_INTERVAL);
   Bluefruit.setAppearance(DEVICE_APPEARANCE);
-
+  
   Bluefruit.Periph.setConnectCallback(periph_connect_callback);
   Bluefruit.Periph.setDisconnectCallback(periph_disconnect_callback);
 
@@ -149,6 +151,10 @@ void setupBluetooth() {
 //  log("Starting battery service...");
 //  blebas.begin();
 //  blebas.notify(100);
+  
+  log("Starting necklace client service...");
+  bleNecklaceClientService.begin();
+  bleNecklaceColorClientChar.begin();
 
   log("Starting necklace service...");
   bleNecklackService.begin();
@@ -160,9 +166,6 @@ void setupBluetooth() {
   bleNecklaceColorChar.setFixedLen(6);
   bleNecklaceColorChar.write(deviceColour, 6);
   bleNecklaceColorChar.begin();
-
-  bleNecklaceClientService.begin();
-  bleNecklaceColorClientChar.begin();
 }
 
 void startScanner(void) {
@@ -170,7 +173,7 @@ void startScanner(void) {
   Bluefruit.Scanner.restartOnDisconnect(true);
   Bluefruit.Scanner.setInterval(10000, 500); // in unit of 0.625 ms
   Bluefruit.Scanner.filterUuid(bleNecklackService.uuid);
-  Bluefruit.Scanner.useActiveScan(true);
+  Bluefruit.Scanner.useActiveScan(false);
   Bluefruit.Scanner.start(0);  // 0 = Don't stop scanning after n seconds
 }
 
@@ -201,14 +204,23 @@ void setupLEDs() {
   FastLED.show();
 }
 
+void setupRecentlyConnected() {
+  log ("Setting up and clearing recently connected necklaces");
+  
+  for (int i = 0; i < MAX_NECKLACES; i++) {
+    recentlyConnectedMacs[i] = String("");
+  }
+}
+
 void setup() {
   setupSerial();
-log(String(sizeof(connectedColour)));
+
   String("LED Necklace - " + UNIQUE_ID).toCharArray(deviceName, 24);
 
   log("Starting Up " + String(deviceName) + "...");
 
   setupLEDs();
+  setupRecentlyConnected();
   
   log("\n---- Bluetooth Setup Start ----");
   setupBluetooth();
@@ -221,10 +233,73 @@ log(String(sizeof(connectedColour)));
   log("---- Bluetooth Advertising Started ----");
 }
 
+bool isRecentlyFound(uint16_t connHandle) {
+  char macBuffer[32];
+  bool wasFound = false;
+  ble_gap_addr_t peer_addr = Bluefruit.Connection(connHandle)->getPeerAddr();
+  
+  snprintf(macBuffer, 19, "%02X:%02X:%02X:%02X:%02X:%02X",
+           peer_addr.addr[5],
+           peer_addr.addr[4],
+           peer_addr.addr[3],
+           peer_addr.addr[2],
+           peer_addr.addr[1],
+           peer_addr.addr[0]
+          );
+
+  log("Checking recently found in " + String(MAX_NECKLACES) + " items : " + String(macBuffer));
+
+  for (int i = 0; i < MAX_NECKLACES; i++) {    
+    if (recentlyConnectedMacs[i] == macBuffer) {
+      wasFound = true; 
+    }
+  }
+  
+  return wasFound;
+}
+
+void pushFound(uint16_t connHandle) {
+  char macBuffer[32];
+  ble_gap_addr_t peer_addr = Bluefruit.Connection(connHandle)->getPeerAddr();
+  
+  snprintf(macBuffer, 19, "%02X:%02X:%02X:%02X:%02X:%02X",
+           peer_addr.addr[5],
+           peer_addr.addr[4],
+           peer_addr.addr[3],
+           peer_addr.addr[2],
+           peer_addr.addr[1],
+           peer_addr.addr[0]
+          );
+
+  log("Pushing found MAC address: " + String(macBuffer));
+  
+  for (int i = 0; i < MAX_NECKLACES; i++) {
+    if (recentlyConnectedMacs[i] == macBuffer) {
+      log("Already found this MAC address");
+      
+      return;
+    } else if (recentlyConnectedMacs[i] == String("")) {
+      log("Set " + String(macBuffer) + " address to idx: " + String(i));
+      
+      recentlyConnectedMacs[i] = String(macBuffer);
+
+      return;
+    }
+  }
+
+  log("Already found the maximum amount of necklaces, removing first 5 to be found again");
+
+  recentlyConnectedMacs[0] = String("");
+  recentlyConnectedMacs[1] = String("");
+  recentlyConnectedMacs[2] = String("");
+  recentlyConnectedMacs[3] = String("");
+  recentlyConnectedMacs[4] = String("");
+}
+
 // Callbacks
 
 void scan_callback(ble_gap_evt_adv_report_t* report) {
-  // Since we configure the scanner with filterUuid()
+  // Since we configure the scanner with filterUuid()  
   // Scan callback only invoked for device with bleuart service advertised
   // Connect to the device with bleuart service in advertising packet
   //  Bluefruit.Central.connect(report);
@@ -278,35 +353,43 @@ bool inRange = false;
 bool isConnected = false;
 
 void periph_connect_callback(uint16_t connHandle) {
+  if (isConnected) {
+    log("[Peripheral] Already at max connections, exiting....");  
+
+    Bluefruit.disconnect(connHandle);
+    
+    return;
+  } else if (isRecentlyFound(connHandle)) {
+    log("[Peripheral] Already found this necklace, exiting....");  
+
+    Bluefruit.disconnect(connHandle);
+    return;
+  }
+  
+  char centralName[32] = { 0 };
+  
   isConnected = true;
+  inRange = false;
   
   // Get the reference to current connection
   BLEConnection* connection = Bluefruit.Connection(connHandle);
   
+  connection->getPeerName(centralName, sizeof(centralName) - 1);
+  
   connection->monitorRssi();
   
-  setConnectedColor(connHandle);
-  
-  char centralName[24];
-  
-  connection->getPeerName(centralName, sizeof(centralName));
+  setConnectedColor(connHandle, "Peripheral");
           
   log("[Peripheral] Connected to " + String(centralName) + ", monitoring till close or disconnected");
-
-  inRange = false;
-  
-  memset(centralName, 0, sizeof(centralName));
 }
 
 void periph_disconnect_callback(uint16_t connHandle, uint8_t reason) {
   (void) connHandle;
   (void) reason;
   isConnected = false;
-  BLEConnection* connection = Bluefruit.Connection(connHandle);
 
+  Bluefruit.Connection(connHandle)->stopRssi();
   log("[Peripheral] Disconnected, reason = 0x" + String(HEX));
-
-  connection->stopRssi();
 
   if (recentlyFound) {
     recentlyFound = false;
@@ -316,35 +399,40 @@ void periph_disconnect_callback(uint16_t connHandle, uint8_t reason) {
 }
 
 void central_connect_callback(uint16_t connHandle) {
+  if (isConnected) {
+    log("[Central] Already at max connections, exiting....");  
+
+    Bluefruit.disconnect(connHandle);
+    return;
+  } else if (isRecentlyFound(connHandle)) {
+    log("[Central] Already found this necklace, exiting....");  
+
+    Bluefruit.disconnect(connHandle);
+    return;
+  }
+  
   isConnected = true;
-  
-  // Get the reference to current connection
-  BLEConnection* connection = Bluefruit.Connection(connHandle);
-
-  connection->monitorRssi();
-  
-  setConnectedColor(connHandle);
-  
-  char peerName[24];
-  connection->getPeerName(peerName, sizeof(peerName));
-
-  log("[Central] Connected to " + String(peerName) + ", monitoring till close or disconnected");
-  
   inRange = false;
 
-  memset(peerName, 0, sizeof(peerName));
+  char periphName[32] = { 0 };
+  
+  Bluefruit.Connection(connHandle)->getPeerName(periphName, sizeof(periphName) - 1);
+  Bluefruit.Connection(connHandle)->monitorRssi();
+  
+  setConnectedColor(connHandle, "Central");
+  
+  log("[Central] Connected to " + String(periphName) + ", monitoring till close or disconnected");
+  
 }
 
 void central_disconnect_callback(uint16_t connHandle, uint8_t reason) {
   (void) connHandle;
   (void) reason;
-  
+
   isConnected = false;
 
-  BLEConnection* connection = Bluefruit.Connection(connHandle);
-
   log("[Central] Disconnected");
-  connection->stopRssi();
+  Bluefruit.Connection(connHandle)->stopRssi();
 
   if (recentlyFound) {
     recentlyFound = false;
@@ -357,6 +445,8 @@ int rssiForAvg[RSSI_AVG_NUM];
 
 // 0 is Central BLE
 // 1 is PeripheralBLE
+// It's necessary to manually set this because it automatically
+// infers the wrong connection otherwise (╯°□°）╯︵ ┻━┻
 void loop() {
   if (Bluefruit.connected(0)) {    
     getRssiAndCheckForCloseness(0);
@@ -365,19 +455,20 @@ void loop() {
   }
 }
 
-void setConnectedColor(uint16_t connHandle) {
+void setConnectedColor(uint16_t connHandle, String side) {
   if (bleNecklaceClientService.discover(connHandle)) {
-    log("[Peripheral] Found Necklace Service"); 
+    log("[" + side + "] Found Necklace Service"); 
     
     if (bleNecklaceColorClientChar.discover()) {
-      bleNecklaceColorClientChar.read(connectedColour, 3);
+      bleNecklaceColorClientChar.read(connectedColour, 6);
+      currentLEDColour = strtol(connectedColour, NULL, 16);
 
-      log("[Peripheral] Found Necklace Color Charactaristic: " + String(connectedColour));
+      log("[" + side + "] Found Necklace Color Charactaristic: " + String(connectedColour));
     } else {
-     log("[Peripheral] Couldn't find Necklace Color Charactaristic"); 
+     log("[" + side + "] Couldn't find Necklace Color Charactaristic"); 
     }    
   } else {
-    log("[Peripheral] Couldn't find Necklace Service");
+    log("[" + side + "] Couldn't find Necklace Service");
   }
 }
 
@@ -460,13 +551,14 @@ void toggleLightWithAvgRssi(uint16_t conn_hdl) {
   BLEConnection* connection = Bluefruit.Connection(conn_hdl);
   int avgRssi = averageRssi();
   int rssiDelay = blinkDelayInterval(avgRssi);  
-  char connectedDeviceName[32] = { 0 };
+  char connectedDeviceName[32];
   
   resetRssi();
   connection->getPeerName(connectedDeviceName, sizeof(connectedDeviceName));  
   
   log(String(connectedDeviceName) + " is " + String(avgRssi) + " away " + String(rssiDelay) + "ms delay");
-  
+
+  fill_solid(leds, 1, currentLEDColour);
   turnOnLED(rssiDelay / 3 * 2);
      
   if (avgRssi <= minRSSI) {
@@ -475,6 +567,7 @@ void toggleLightWithAvgRssi(uint16_t conn_hdl) {
     inRange = true;
     recentlyFound = true;
     
+    pushFound(conn_hdl);
     foundBlink();
 
     if (avgRssi < minRSSI) {
@@ -484,6 +577,8 @@ void toggleLightWithAvgRssi(uint16_t conn_hdl) {
     Bluefruit.disconnect(conn_hdl);
   } else if (isConnected) {
     turnOffLED(rssiDelay / 3);
+  } else {
+    turnOffLED(0);
   }
 
   memset(connectedDeviceName, 0, sizeof(connectedDeviceName));
