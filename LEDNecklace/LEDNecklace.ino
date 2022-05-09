@@ -1,7 +1,6 @@
 #include <bluefruit.h>
 #include <FastLED.h>
-//#include <Adafruit_LittleFS.h>
-//#include <InternalFileSystem.h>
+#include "ColorStorage.h"
 
 #define DEVICE_APPEARANCE 1361 // Proximity Device
 #define SOFTWARE_VERSION "0.1.0"
@@ -41,12 +40,12 @@ BLEClientCharacteristic bleNecklaceColorClientChar(PROXIMITY_NECKLACE_BLE_LED_CO
 
 String UNIQUE_ID = String(getMcuUniqueID());
 char deviceName[24];
-char deviceColour[] = "FF00FF";
 char connectedColour[] = "0000FF";
 int maxRSSI = 70;
 int minRSSI = 40;
 bool recentlyFound = false;
 String recentlyConnectedMacs[MAX_NECKLACES];
+ColorStorage deviceColour = ColorStorage();
 
 CRGB leds[1];
 CRGB currentLEDColour = CRGB::Green;
@@ -68,6 +67,10 @@ CRGBPalette16 rainbowPallet = CRGBPalette16(
   CRGB::Violet,
   CRGB::Violet
 );
+
+CRGB getDeviceColour() {
+  return strtol(deviceColour.getColour().c_str(), NULL, 16);
+}
 
 void log(const String message) {
   Serial.println(message);
@@ -164,7 +167,7 @@ void setupBluetooth() {
   bleNecklaceColorChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   bleNecklaceColorChar.setProperties(CHR_PROPS_READ);
   bleNecklaceColorChar.setFixedLen(6);
-  bleNecklaceColorChar.write(deviceColour, 6);
+  bleNecklaceColorChar.write(deviceColour.getColour().c_str(), 6);
   bleNecklaceColorChar.begin();
 }
 
@@ -198,14 +201,16 @@ void startAdv(void) {
 }
 
 void setupLEDs() {
+  log("Setting up LEDS");
+  
   FastLED.addLeds<WS2812B, 9, GRB>(leds, 1);
   FastLED.setBrightness(0);
-  fill_solid(leds, 1, currentLEDColour);
+  fill_solid(leds, 1, getDeviceColour());
   FastLED.show();
 }
 
 void setupRecentlyConnected() {
-  log ("Setting up and clearing recently connected necklaces");
+  log("Setting up and clearing recently connected necklaces");
   
   for (int i = 0; i < MAX_NECKLACES; i++) {
     recentlyConnectedMacs[i] = String("");
@@ -219,6 +224,10 @@ void setup() {
 
   log("Starting Up " + String(deviceName) + "...");
 
+  
+  log("Starting up file system");
+  
+  deviceColour.begin();
   setupLEDs();
   setupRecentlyConnected();
   
@@ -568,19 +577,6 @@ void toggleLightWithAvgRssi(uint16_t conn_hdl) {
 
   memset(connectedDeviceName, 0, sizeof(connectedDeviceName));
 }
-
-//
-//      char macBuffer[32];
-//      ble_gap_addr_t peer_addr = connection->getPeerAddr();
-//    
-//      snprintf(macBuffer, 19, "%02X:%02X:%02X:%02X:%02X:%02X",
-//               peer_addr.addr[5],
-//               peer_addr.addr[4],
-//               peer_addr.addr[3],
-//               peer_addr.addr[2],
-//               peer_addr.addr[1],
-//               peer_addr.addr[0]
-//              );
 
 void turnOnLED(const int duration) {
   const int stepsPerTick = duration / 100;
